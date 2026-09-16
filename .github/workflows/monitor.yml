@@ -1,0 +1,43 @@
+name: TrustPositif Monitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run TrustPositif Monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor.py
+
+      - name: Save monitoring state
+        run: |
+          git config user.name "TrustPositif Monitor"
+          git config user.email "actions@github.com"
+
+          git add status.json
+
+          if git diff --cached --quiet; then
+            echo "No status change"
+          else
+            git commit -m "Update TrustPositif monitoring status"
+            git push
+          fi
