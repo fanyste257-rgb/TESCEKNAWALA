@@ -1,10 +1,7 @@
 import json
 import os
-import socket
-import subprocess
-from datetime import datetime, timezone, timedelta
-import urllib.parse
 import urllib.request
+from datetime import datetime, timezone, timedelta
 
 DOMAIN = "janda4dqztv.xyz"
 
@@ -14,216 +11,123 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 WIB = timezone(timedelta(hours=7))
 STATE_FILE = "status.json"
 
-DNS_SERVERS = [
-    "103.155.26.28",
-    "103.155.26.29",
-]
+API_URL = f"https://trustpositif.glng.my.id/check/{DOMAIN}"
 
 
-def check_dns(server):
-    """
-    Query DNS TrustPositif/Komdigi using dig.
-    We inspect the complete response for:
-    - EDE 15 (Blocked)
-    - trustpositif.komdigi.go.id
-    - komdigi
-    """
+def check_domain():
+    try:
+        request = urllib.request.Request(
+            API_URL,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
 
-    command = [
-        "dig",
-        f"@{server}",
-        DOMAIN,
-        "A",
-        "+comments",
-        "+answer",
-        "+time=5",
-        "+tries=1",
-    ]
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=15
+        print("API RESPONSE:")
+        print(json.dumps(data, indent=2))
+
+        if "blocked" not in data:
+            return "ERROR", "Format API tidak dikenal"
+
+        if data["blocked"] is True:
+            return "BLOCKED", "Domain terdeteksi dalam database blokir"
+
+        if data["blocked"] is False:
+            return "NOT_BLOCKED", "Domain tidak ditemukan dalam database blokir"
+
+        return "ERROR", "Status tidak dapat ditentukan"
+
+    except Exception as e:
+        return "ERROR", str(e)
+
+
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json"
+        },
+        method="POST"
     )
 
-    output = (
-        result.stdout +
-        "\n" +
-        result.stderr
-    ).lower()
-
-    if "ede: 15" in output:
-        return "BLOCKED", output
-
-    if "trustpositif.komdigi.go.id" in output:
-        return "BLOCKED", output
-
-    if "block-list-zone" in output:
-        return "BLOCKED", output
-
-    if result.returncode != 0:
-        return "ERROR", output
-
-    # If DNS returned an answer without a block indicator
-    if "answer section" in output:
-        return "NOT_BLOCKED", output
-
-    return "ERROR", output
+    with urllib.request.urlopen(request, timeout=20) as response:
+        response.read()
 
 
-def load_state():
+def load_previous_status():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f).get("status")
     except Exception:
-        return {}
+        return None
 
 
-def save_state(status):
+def save_status(status):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(
             {
+                "domain": DOMAIN,
                 "status": status,
-                "domain": DOMAIN
+                "checked_at": datetime.now(WIB).isoformat()
             },
             f,
             indent=2
         )
 
 
-def send_telegram(message):
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TELEGRAM_TOKEN}/sendMessage"
-    )
-
-    data = urllib.parse.urlencode({
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }).encode()
-
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST"
-    )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=30
-    ) as response:
-        return response.read()
-
-
 def main():
+    status, detail = check_domain()
 
-    now = datetime.now(WIB)
-    previous = load_state()
+    waktu = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
 
-    results = []
+    if status == "BLOCKED":
+        status_text = "🔴 TERBLOKIR"
 
-    for server in DNS_SERVERS:
-
-        try:
-            status, raw = check_dns(server)
-
-            results.append({
-                "server": server,
-                "status": status
-            })
-
-        except Exception as error:
-
-            results.append({
-                "server": server,
-                "status": "ERROR",
-                "error": str(error)
-            })
-
-    blocked_count = sum(
-        1 for r in results
-        if r["status"] == "BLOCKED"
-    )
-
-    error_count = sum(
-        1 for r in results
-        if r["status"] == "ERROR"
-    )
-
-    if blocked_count >= 1:
-
-        overall_status = "BLOCKED"
-        emoji = "🔴"
-        description = "TERINDIKASI DIBLOKIR"
-
-    elif error_count == len(results):
-
-        overall_status = "ERROR"
-        emoji = "🟡"
-        description = "TIDAK DAPAT DIVERIFIKASI"
+    elif status == "NOT_BLOCKED":
+        status_text = "🟢 TIDAK TERBLOKIR"
 
     else:
+        status_text = "🟡 TIDAK DAPAT DIVERIFIKASI"
 
-        overall_status = "NOT_BLOCKED"
-        emoji = "🟢"
-        description = "TIDAK TERINDIKASI DIBLOKIR"
+    message = f"""🛡️ TRUSTPOSITIF MONITOR
 
-    lines = [
-        "🛡️ TRUSTPOSITIF MONITOR",
-        "",
-        f"Domain:",
-        DOMAIN,
-        "",
-        f"Status:",
-        f"{emoji} {description}",
-        "",
-        "DNS TrustPositif/Komdigi:"
-    ]
+Domain: {DOMAIN}
 
-    for result in results:
+Status: {status_text}
 
-        if result["status"] == "BLOCKED":
-            icon = "🔴"
+Detail:
+{detail}
 
-        elif result["status"] == "NOT_BLOCKED":
-            icon = "🟢"
+Waktu: {waktu} WIB
 
-        else:
-            icon = "🟡"
+Sumber pemeriksaan:
+TrustPositif / Nawala relay
+"""
 
-        lines.append(
-            f"{icon} {result['server']} — "
-            f"{result['status']}"
-        )
+    previous_status = load_previous_status()
 
-    lines.extend([
-        "",
-        f"Waktu:",
-        now.strftime("%d-%m-%Y %H:%M:%S") + " WIB",
-        "",
-        "Patokan:",
-        "TrustPositif Komdigi"
-    ])
+    # Kirim selalu untuk sementara, supaya kita bisa memastikan
+    # hasil pemeriksaan benar-benar masuk ke Telegram.
+    send_telegram(message)
 
-    send_telegram("\n".join(lines))
+    save_status(status)
 
-    old_status = previous.get("status")
-
-    if old_status and old_status != overall_status:
-
-        change_message = (
-            "🚨 STATUS TRUSTPOSITIF BERUBAH\n\n"
-            f"Domain:\n{DOMAIN}\n\n"
-            f"Sebelumnya:\n{old_status}\n\n"
-            f"Sekarang:\n{overall_status}\n\n"
-            f"Waktu:\n"
-            f"{now.strftime('%d-%m-%Y %H:%M:%S')} WIB"
-        )
-
-        send_telegram(change_message)
-
-    save_state(overall_status)
+    print(message)
+    print(f"Previous status: {previous_status}")
+    print(f"Current status: {status}")
 
 
 if __name__ == "__main__":
